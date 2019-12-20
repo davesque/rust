@@ -1122,8 +1122,26 @@ fn needs_drop_raw<'tcx>(tcx: TyCtxt<'tcx>, query: ty::ParamEnvAnd<'tcx, Ty<'tcx>
 
         // Can refer to a type which may drop.
         // FIXME(eddyb) check this against a ParamEnv.
-        ty::Dynamic(..) | ty::Projection(..) | ty::Param(_) | ty::Bound(..) |
-        ty::Placeholder(..) | ty::Opaque(..) | ty::Infer(_) | ty::Error => true,
+        ty::Dynamic(..) |
+        ty::Param(_) |
+        ty::Bound(..) |
+        ty::Placeholder(..) |
+        ty::Opaque(..) |
+        ty::Infer(_) |
+        ty::Error => true,
+
+        ty::Projection(..) => {
+            if let traits::Reveal::All = param_env.reveal {
+                let normalized = tcx.normalize_erasing_regions(param_env, ty);
+                if let ty::Projection(..) = normalized.kind {
+                    true
+                } else {
+                    needs_drop(normalized)
+                }
+            } else {
+                true
+            }
+        }
 
         ty::UnnormalizedProjection(..) => bug!("only used with chalk-engine"),
 

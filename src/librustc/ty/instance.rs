@@ -52,7 +52,10 @@ pub enum InstanceDef<'tcx> {
     /// `<[mut closure] as FnOnce>::call_once`
     ClosureOnceShim { call_once: DefId },
 
-    /// `drop_in_place::<T>; None` for empty drop glue.
+    /// `real_drop_in_place::<T>`.
+    /// The `DefId` is for `real_drop_in_place`.
+    /// The `Option<Ty<'tcx>>` is either `Some(T)`, or `None` for empty drop
+    /// glue.
     DropGlue(DefId, Option<Ty<'tcx>>),
 
     ///`<T as Clone>::clone` shim.
@@ -108,11 +111,28 @@ impl<'tcx> InstanceDef<'tcx> {
         if self.is_inline(tcx) {
             return true
         }
-        if let ty::InstanceDef::DropGlue(..) = *self {
-            // Drop glue wants to be instantiated at every codegen
+        if let ty::InstanceDef::DropGlue(.., Some(ty)) = *self {
+            // Drop glue generally wants to be instantiated at every codegen
             // unit, but without an #[inline] hint. We should make this
             // available to normal end-users.
-            return true
+            if tcx.sess.opts.incremental.is_none() {
+                return true;
+            }
+            // When compiling with incremental, we can generate a *lot* of
+            // codegen units. Including drop glue into all of them has a
+            // considerable compile time cost.
+            //
+            // We include enums without destructors to allow, say, optimizing
+            // drops of `Option::None` before LTO. We also respect the intent of
+            // `#[inline]` on `Drop::drop` implementations.
+            return ty.ty_adt_def()
+                .map_or(true, |adt_def| {
+                    adt_def.destructor(tcx)
+                        .map_or(
+                            adt_def.is_enum(),
+                            |dtor| tcx.codegen_fn_attrs(dtor.did).requests_inline(),
+                        )
+                })
         }
         tcx.codegen_fn_attrs(self.def_id()).requests_inline()
     }
